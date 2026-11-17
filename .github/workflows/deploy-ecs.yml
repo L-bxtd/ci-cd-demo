@@ -1,6 +1,7 @@
-# 实验四：Git push 到 main 后自动构建前后端并部署阿里云 ECS
-# 前置：完成 ECS 初始化（Nginx/systemd/deploy 用户）与 4 个 Secrets（ECS_HOST / ECS_USER /
-# ECS_SSH_PRIVATE_KEY / ECS_SSH_KNOWN_HOSTS）。健康检查失败自动回滚上一版本。
+# 实验四：Git push 到 main 后自动构建前后端并部署
+# 说明：按实验要求原方案为部署阿里云 ECS；本环境以本地 VMware 虚拟机（Ubuntu Server 24.04，
+# self-hosted runner + nginx + systemd）等效替代 ECS，部署流程与 ECS 版一致：
+# 按 SHA 建目录 -> 生产依赖安装 -> 原子切换 current -> systemd 重启 -> 健康检查 -> 失败回滚。
 name: Build and Deploy Full Stack to ECS
 
 on:
@@ -16,15 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      ECS_HOST: ${{ secrets.ECS_HOST }}
-      ECS_USER: ${{ secrets.ECS_USER }}
-      ECS_SSH_PRIVATE_KEY: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
-      ECS_SSH_KNOWN_HOSTS: ${{ secrets.ECS_SSH_KNOWN_HOSTS }}
-
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,29 +44,48 @@ jobs:
           npm run build
           test -f dist/server.js
 
-      - name: Configure trusted SSH connection
-        run: |
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$ECS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
-          chmod 600 "$HOME/.ssh/id_ed25519"
-          printf '%s\n' "$ECS_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: apps/frontend/dist/
 
-      - name: Upload frontend and backend artifacts
-        run: |
-          DEST="/srv/cicd-demo/releases/${GITHUB_SHA}"
-          ssh -o BatchMode=yes "$ECS_USER@$ECS_HOST" "mkdir -p '$DEST/frontend' '$DEST/backend/dist'"
-          rsync -az --delete apps/frontend/dist/ "$ECS_USER@$ECS_HOST:$DEST/frontend/"
-          rsync -az --delete apps/backend/dist/ "$ECS_USER@$ECS_HOST:$DEST/backend/dist/"
-          rsync -az apps/backend/package.json apps/backend/package-lock.json \
-            "$ECS_USER@$ECS_HOST:$DEST/backend/"
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dist
+          path: |
+            apps/backend/dist/
+            apps/backend/package.json
+            apps/backend/package-lock.json
 
-      - name: Activate release, check health, rollback if needed
+  deploy:
+    runs-on: self-hosted
+    needs: build
+    timeout-minutes: 15
+    steps:
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: artifacts/frontend
+
+      - name: Download backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-dist
+          path: artifacts/backend
+
+      - name: Stage release, activate, check health, rollback if needed
         run: |
-          ssh -o BatchMode=yes "$ECS_USER@$ECS_HOST" "DEPLOY_SHA=$GITHUB_SHA bash -se" <<'REMOTE'
           set -euo pipefail
-          release="/srv/cicd-demo/releases/${DEPLOY_SHA}"
+          release="/srv/cicd-demo/releases/${GITHUB_SHA}"
           previous="$(readlink -f /srv/cicd-demo/current || true)"
+
+          mkdir -p "$release/frontend" "$release/backend/dist"
+          cp -a artifacts/frontend/. "$release/frontend/"
+          cp -a artifacts/backend/dist/. "$release/backend/dist/"
+          cp -a artifacts/backend/package.json artifacts/backend/package-lock.json "$release/backend/"
 
           cd "$release/backend"
           npm ci --omit=dev
@@ -89,5 +103,4 @@ jobs:
             fi
             exit 1
           fi
-          echo "Deployed commit ${DEPLOY_SHA} successfully"
-          REMOTE
+          echo "Deployed commit ${GITHUB_SHA} successfully"
