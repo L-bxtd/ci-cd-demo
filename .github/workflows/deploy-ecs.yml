@@ -1,5 +1,5 @@
 # 实验四：Git push 到 main 后自动构建前后端并部署
-# 说明：按实验要求原方案为部署阿里云 ECS；本环境以本地 VMware 虚拟机（Ubuntu Server 24.04，
+# 说明：按实验要求原方案为部署阿里云 ECS；本环境以本地 VMware 虚拟机（Ubuntu 20.04.6 LTS，
 # self-hosted runner + nginx + systemd）等效替代 ECS，部署流程与 ECS 版一致：
 # 按 SHA 建目录 -> 生产依赖安装 -> 原子切换 current -> systemd 重启 -> 健康检查 -> 失败回滚。
 name: Build and Deploy Full Stack to ECS
